@@ -96,7 +96,7 @@ def get_config(is_local):
     logging.basicConfig(level=logging.INFO,
                         format='%(levelname)-s: %(message)s')
     if is_local:
-        shortopts = 'hd:s:b:p:k:l:m:c:t:vq'
+        shortopts = 'hd:s:b:p:k:l:m:c:t:vq:r'
         longopts = ['help', 'fast-open', 'pid-file=', 'log-file=']
     else:
         shortopts = 'hd:s:p:k:m:c:t:vq'
@@ -137,6 +137,8 @@ def get_config(is_local):
                 config['method'] = to_bytes(value)
             elif key == '-b':
                 config['local_address'] = to_bytes(value)
+            elif key == '-r':
+                config['route'] = True
             elif key == '-v':
                 v_count += 1
                 # '-vv' turns on more verbose mode
@@ -173,7 +175,8 @@ def get_config(is_local):
         logging.error('config not specified')
         print_help(is_local)
         sys.exit(2)
-
+        
+    config['route'] = config.get('route', False)
     config['password'] = config.get('password', '')
     config['method'] = config.get('method', b'aes-256-cfb')
     config['port_password'] = config.get('port_password', None)

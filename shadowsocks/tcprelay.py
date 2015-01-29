@@ -111,6 +111,7 @@ class TCPRelayHandler(object):
         self._local_sock = local_sock
         self._remote_sock = None
         self._config = config
+        self._is_route = config['route']
         self._dns_resolver = dns_resolver
         self._is_local = is_local
         self._stage = STAGE_INIT
@@ -232,8 +233,9 @@ class TCPRelayHandler(object):
         return True
 
     def _handle_stage_connecting(self, data):
-        if self._is_local:
+        if self._is_local and not self._is_route:
             data = self._encryptor.encrypt(data)
+
         self._data_to_write_to_remote.append(data)
         if self._is_local and not self._fastopen_connected and \
                 self._config['fast_open']:
@@ -346,6 +348,21 @@ class TCPRelayHandler(object):
         remote_sock.setsockopt(socket.SOL_TCP, socket.TCP_NODELAY, 1)
         return remote_sock
 
+    def _connect_remote(self, remote_addr, remote_port):
+        remote_sock = self._create_remote_socket(remote_addr,
+                                             remote_port)
+        try:
+            remote_sock.connect((remote_addr, remote_port))
+        except (OSError, IOError) as e:
+            if eventloop.errno_from_exception(e) == \
+                    errno.EINPROGRESS:
+                pass
+        self._loop.add(remote_sock,
+                       eventloop.POLL_ERR | eventloop.POLL_OUT)
+        self._stage = STAGE_CONNECTING
+        self._update_stream(STREAM_UP, WAIT_STATUS_READWRITING)
+        self._update_stream(STREAM_DOWN, WAIT_STATUS_READING)
+
     def _handle_dns_resolved(self, result, error):
         if error:
             self._log_error(error)
@@ -373,19 +390,7 @@ class TCPRelayHandler(object):
                         # TODO when there is already data in this packet
                     else:
                         # else do connect
-                        remote_sock = self._create_remote_socket(remote_addr,
-                                                                 remote_port)
-                        try:
-                            remote_sock.connect((remote_addr, remote_port))
-                        except (OSError, IOError) as e:
-                            if eventloop.errno_from_exception(e) == \
-                                    errno.EINPROGRESS:
-                                pass
-                        self._loop.add(remote_sock,
-                                       eventloop.POLL_ERR | eventloop.POLL_OUT)
-                        self._stage = STAGE_CONNECTING
-                        self._update_stream(STREAM_UP, WAIT_STATUS_READWRITING)
-                        self._update_stream(STREAM_DOWN, WAIT_STATUS_READING)
+                        self._connect_remote(remote_addr, remote_port)
                     return
                 except Exception as e:
                     logging.error(e)
@@ -410,12 +415,17 @@ class TCPRelayHandler(object):
         if not data:
             self.destroy()
             return
+
+        if self._is_route and not self._remote_sock:
+            self._connect_remote(self._chosen_server[0], self._chosen_server[1])
+            #after connect self._stage == STAGE_CONNECTION
+
         if not is_local:
             data = self._encryptor.decrypt(data)
             if not data:
                 return
         if self._stage == STAGE_STREAM:
-            if self._is_local:
+            if self._is_local and not self._is_route:
                 data = self._encryptor.encrypt(data)
             self._write_to_sock(data, self._remote_sock)
             return
@@ -443,10 +453,12 @@ class TCPRelayHandler(object):
         if not data:
             self.destroy()
             return
-        if self._is_local:
-            data = self._encryptor.decrypt(data)
-        else:
-            data = self._encryptor.encrypt(data)
+            
+        if not self._is_route:
+            if self._is_local:
+                data = self._encryptor.decrypt(data)
+            else:
+                data = self._encryptor.encrypt(data)
         try:
             self._write_to_sock(data, self._local_sock)
         except Exception as e:
